@@ -1,0 +1,94 @@
+name: Build logiops Debian Package
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:13-slim
+
+    steps:
+      - name: Install Core Bootstrapping Tools
+        run: |
+          apt-get update
+          apt-get install -y git build-essential cmake pkg-config
+
+      - name: Checkout Forked Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Build Dependencies
+        run: |
+          apt-get install -y libevdev-dev libudev-dev libconfig++-dev g++ libglib2.0-dev
+
+      - name: Extract Version Configuration
+        run: |
+          RAW_VER=$(git describe --tags --always 2>/dev/null || echo "0")
+          if [[ "$RAW_VER" =~ ^[a-zA-Z] ]]; then
+            CLEAN_VER="0.0.0+git.${RAW_VER}"
+          else
+            CLEAN_VER="${RAW_VER}"
+          fi
+          echo "LOGIOPS_VERSION=${CLEAN_VER}" >> $GITHUB_ENV
+
+      - name: Compile logiops
+        run: |
+          mkdir build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr ..
+          make -j$(nproc)
+
+      - name: Create Debian Package Structure
+        run: |
+          # Create installation staging directory from the repository root
+          mkdir -p build/stage/usr/bin build/stage/etc build/stage/lib/systemd/system build/stage/DEBIAN
+          
+          # Copy compiled binary explicitly
+          cp build/logid build/stage/usr/bin/
+          
+          # Explicitly copy the systemd service file from the repo root
+          if [ -f "logid.service" ]; then
+            cp logid.service build/stage/lib/systemd/system/
+          else
+            echo "WARNING: logid.service not found in root, generating a fallback"
+            cat << 'EOF' > build/stage/lib/systemd/system/logid.service
+            [Unit]
+            Description=Logitech Configuration Daemon
+            After=bluetooth.target
+
+            [Service]
+            Type=simple
+            ExecStart=/usr/bin/logid
+            User=root
+            Restart=on-failure
+
+            [Install]
+            WantedBy=multi-user.target
+          EOF
+          fi
+
+          # Output native package configuration controls
+          cat << EOF > build/stage/DEBIAN/control
+          Package: logiops
+          Version: ${LOGIOPS_VERSION}
+          Architecture: amd64
+          Maintainer: Erick <your-email@example.com>
+          Depends: libevdev2, libudev1, libglib2.0-0, libconfig++11
+          Section: utils
+          Priority: optional
+          Description: An unofficial driver for Logitech mice. Handles system configuration and gestures seamlessly.
+          EOF
+
+      - name: Build .deb Package
+        run: |
+          cd build
+          dpkg-deb --build stage logiops-${{ env.LOGIOPS_VERSION }}_amd64.deb
+
+      - name: Upload Debian Package Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: logiops-deb-package
+          path: build/logiops-*.deb
