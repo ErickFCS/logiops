@@ -1,0 +1,63 @@
+name: Build logiops Debian Package
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Forked Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libevdev-dev libudev-dev libconfig++-dev g++ build-essential pkg-config libglib2.0-dev
+
+      - name: Extract Version Configuration
+        run: |
+          echo "LOGIOPS_VERSION=$(git describe --tags --always)" >> $GITHUB_ENV
+
+      - name: Compile logiops
+        run: |
+          mkdir build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr ..
+          make -j$(nproc)
+
+      - name: Create Debian Package Structure
+        run: |
+          cd build
+          mkdir -p stage/usr/bin stage/etc stage/lib/systemd/system stage/DEBIAN
+          
+          cp logid stage/usr/bin/
+          
+          if [ -f "../logid.service" ]; then
+            cp ../logid.service stage/lib/systemd/system/
+          fi
+
+          cat << EOF > stage/DEBIAN/control
+          Package: logiops
+          Version: ${LOGIOPS_VERSION}
+          Architecture: amd64
+          Maintainer: Erick <your-email@example.com>
+          Depends: libevdev2, libudev1, libconfig++9v5, libglib2.0-0
+          Section: utils
+          Priority: optional
+          Description: An unofficial driver for Logitech mice (written in C++).
+           Allows for advanced configurations and gesture mappings over Bluetooth and Bolt.
+          EOF
+
+      - name: Build .deb Package
+        run: |
+          cd build
+          dpkg-deb --build stage logiops-${{ env.LOGIOPS_VERSION }}_amd64.deb
+
+      - name: Upload Debian Package Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: logiops-deb-package
+          path: build/logiops-*.deb
